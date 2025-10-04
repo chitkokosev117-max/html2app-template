@@ -1,0 +1,344 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, onSnapshot, collection, query, serverTimestamp, addDoc } from 'firebase/firestore';
+
+// Define global variables provided by the environment
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Helper function to generate a random UUID for anonymous users
+const generateAnonymousId = () => crypto.randomUUID();
+
+// --- Configuration and Initialization ---
+let db, auth, app;
+
+// Component for a single post item
+const PostCard = ({ post }) => {
+    // Determine content type and display accordingly
+    const isVideo = post.contentType === 'video';
+    // Use a fixed placeholder image for display
+    const mediaUrl = post.mediaUrl || 'https://placehold.co/400x300/1e293b/ffffff?text=Image+Not+Found'; 
+
+    return (
+        <div className="bg-white shadow-xl rounded-2xl overflow-hidden mb-6 transition-all duration-300 ease-in-out hover:shadow-2xl">
+            {/* Media Content */}
+            <div className="w-full bg-slate-800 flex items-center justify-center p-2">
+                {isVideo ? (
+                    // Mock Video Container
+                    <div className="w-full h-80 flex items-center justify-center bg-gray-900 rounded-xl">
+                        <svg className="w-16 h-16 text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                        </svg>
+                        <p className="absolute text-white font-bold mt-20">ဗီဒီယို အတုအယောင် (Mock Video)</p>
+                    </div>
+                ) : (
+                    // Image Content
+                    <img
+                        src={mediaUrl}
+                        alt="Work Post"
+                        className="w-full h-80 object-cover rounded-xl border border-gray-100"
+                        onError={(e) => { e.target.onerror = null; e.target.src = 'https://placehold.co/400x300/ef4444/ffffff?text=Error'; }}
+                    />
+                )}
+            </div>
+
+            {/* Post Details */}
+            <div className="p-4">
+                <p className="text-gray-900 font-semibold mb-2 text-lg">{post.caption || 'ဖော်ပြချက်မရှိပါ'}</p>
+                <div className="flex items-center text-sm text-gray-500">
+                    <svg className="w-4 h-4 mr-1 text-blue-500" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" fillRule="evenodd"></path>
+                    </svg>
+                    <span className="font-medium text-gray-700">{post.userName}</span>
+                    <span className="mx-2">·</span>
+                    <span>{post.businessName}</span>
+                </div>
+                {post.timestamp && (
+                    <p className="text-xs text-gray-400 mt-2">
+                        {new Date(post.timestamp.toDate()).toLocaleTimeString('my-MM', {
+                            hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short'
+                        })} က တင်ခဲ့သည်
+                    </p>
+                )}
+            </div>
+        </div>
+    );
+};
+
+// Component for the main post creation area
+const PostCreator = ({ db, auth, userId, businessInfo }) => {
+    const [caption, setCaption] = useState('');
+    const [contentType, setContentType] = useState('image');
+    const [isLoading, setIsLoading] = useState(false);
+    const [message, setMessage] = useState('');
+
+    const publicPostsPath = `artifacts/${appId}/public/data/posts`;
+    
+    // Get info from props
+    const { businessType, userName, phone } = businessInfo;
+
+    const handlePost = async () => {
+        if (!caption.trim() || !userId) {
+            setMessage('စာသားဖြည့်သွင်းပေးပါခင်ဗျာ။');
+            return;
+        }
+
+        setIsLoading(true);
+        setMessage('');
+
+        // Mock media URL based on content type
+        const mediaUrl = contentType === 'image'
+            ? `https://placehold.co/400x300/3b82f6/ffffff?text=Image+Post+%23${Math.floor(Math.random() * 100)}`
+            : `https://placehold.co/400x300/ef4444/ffffff?text=Video+Post+%23${Math.floor(Math.random() * 100)}`;
+
+        try {
+            await addDoc(collection(db, publicPostsPath), {
+                userId,
+                businessName: businessType, 
+                userName,
+                phoneNumber: phone,
+                caption,
+                contentType,
+                mediaUrl,
+                timestamp: serverTimestamp(),
+            });
+            setCaption('');
+            setContentType('image');
+            setMessage('ပို့စ်တင်ခြင်း အောင်မြင်ပါသည်!');
+            setTimeout(() => setMessage(''), 3000);
+        } catch (e) {
+            console.error("Error adding document: ", e);
+            setMessage(`ပို့စ်တင်ရာတွင် အမှားဖြစ်ပွားပါသည်: ${e.message}`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="bg-white p-4 rounded-xl shadow-lg border border-indigo-100 mb-6">
+            <h3 className="text-xl font-bold text-indigo-700 mb-3">အသစ်တင်ရန် (Create Post)</h3>
+            <textarea
+                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 mb-3 resize-none"
+                rows="3"
+                placeholder="ဒီနေ့အလုပ်အကြောင်း ဖော်ပြချက်ရေးပါ..."
+                value={caption}
+                onChange={(e) => setCaption(e.target.value)}
+                disabled={isLoading}
+            ></textarea>
+            
+            <div className="flex justify-between items-center mb-4">
+                <div className="flex space-x-3">
+                    <button
+                        className={`px-4 py-2 rounded-full text-sm font-semibold transition-colors duration-200 ${
+                            contentType === 'image' ? 'bg-indigo-500 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                        }`}
+                        onClick={() => setContentType('image')}
+                        disabled={isLoading}
+                    >
+                        ပုံ (Photo)
+                    </button>
+                    <button
+                        className={`px-4 py-2 rounded-full text-sm font-semibold transition-colors duration-200 ${
+                            contentType === 'video' ? 'bg-indigo-500 text-white shadow-md' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                        }`}
+                        onClick={() => setContentType('video')}
+                        disabled={isLoading}
+                    >
+                        ဗီဒီယို (Video Mock)
+                    </button>
+                </div>
+                
+                <button
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-xl transition-transform transform hover:scale-105 active:scale-95 disabled:bg-indigo-400 flex items-center"
+                    onClick={handlePost}
+                    disabled={isLoading}
+                >
+                    {isLoading && (
+                        <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    )}
+                    {isLoading ? 'တင်နေသည်...' : 'တင်မယ်'}
+                </button>
+            </div>
+            {message && <p className="text-center text-sm mt-2 font-medium text-green-600">{message}</p>}
+            <p className="text-xs text-gray-500 mt-2">
+                မှတ်ချက်: ဤ App သည် ပုံနှင့် ဗီဒီယိုများကို အမှန်တကယ် တင်နိုင်ခြင်းမရှိပါ။ Demo ပြရန်အတွက်သာ Placeholder ကို အသုံးပြုထားပါသည်။
+            </p>
+        </div>
+    );
+};
+
+
+const App = () => {
+    // State for Firebase
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [dbInstance, setDbInstance] = useState(null);
+
+    // State for application data
+    const [posts, setPosts] = useState([]);
+    const [loadingPosts, setLoadingPosts] = useState(true);
+
+    // Hardcoded Business Info 
+    // New App Name: Shan Lay ဝန်ဆောင်မှု
+    const businessInfo = {
+        name: "Shan Lay", // ပိုင်ရှင်နာမည်
+        userName: "Shan Lay",
+        phone: "09-440240900, 09-691565813, 09-789932646", // ဖုန်းနံပါတ် ၃ ခုပေါင်း
+        address: "ရှမ်းပြည်မြှောက်ပိုင်း Lashio မြို့",
+        businessType: "လျှပ်စစ်၊ ရေပိုက်၊ ဆိုလာ စသည် ဝန်ဆောင်မှုများ", 
+    };
+
+    // 1. Firebase Initialization and Authentication
+    useEffect(() => {
+        try {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            setDbInstance(db); // Store db instance for later use
+
+            // Start authentication process
+            const signIn = async () => {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            };
+
+            // Set up Auth State Listener
+            const unsubscribe = onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                } else {
+                    // Fallback for extreme cases, though token/anonymous should guarantee a user
+                    setUserId(generateAnonymousId());
+                }
+                setIsAuthReady(true);
+            }, (error) => {
+                console.error("Auth state error:", error);
+                setUserId(generateAnonymousId());
+                setIsAuthReady(true);
+            });
+
+            signIn();
+
+            return () => unsubscribe();
+        } catch (error) {
+            console.error("Firebase initialization failed:", error);
+            setIsAuthReady(true); // Allow UI to load even if Firebase fails
+        }
+    }, []);
+
+    // 2. Firestore Real-time Data Listener (Feed)
+    useEffect(() => {
+        if (dbInstance && isAuthReady) {
+            // Public data path: artifacts/{appId}/public/data/posts
+            const publicPostsPath = `artifacts/${appId}/public/data/posts`;
+            const q = query(collection(dbInstance, publicPostsPath));
+
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                const fetchedPosts = [];
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    if (data.caption && data.timestamp) {
+                        fetchedPosts.push({
+                            id: doc.id,
+                            ...data,
+                            timestamp: data.timestamp
+                        });
+                    }
+                });
+
+                // Client-side sorting by timestamp (descending)
+                fetchedPosts.sort((a, b) => b.timestamp.toDate() - a.timestamp.toDate());
+
+                setPosts(fetchedPosts);
+                setLoadingPosts(false);
+            }, (error) => {
+                console.error("Error fetching posts:", error);
+                setLoadingPosts(false);
+            });
+
+            return () => unsubscribe();
+        }
+    }, [dbInstance, isAuthReady]); // Depend on dbInstance and auth readiness
+
+    // --- Render Logic ---
+
+    if (!isAuthReady) {
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-gray-50">
+                <p className="text-xl font-medium text-indigo-600">စနစ်စတင်နေပါသည်...</p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-h-screen bg-gray-50 font-sans p-0 m-0">
+            <div className="max-w-xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+                {/* --- HEADER / PROFILE CARD --- */}
+                <div className="bg-white p-6 rounded-2xl shadow-xl mb-8 border-t-4 border-indigo-600">
+                    <h1 className="text-3xl font-extrabold text-indigo-800 mb-4 flex items-center">
+                        <svg className="w-8 h-8 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M10 2a8 8 0 100 16 8 8 0 000-16zM6 10a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1z" clipRule="evenodd" fillRule="evenodd"></path>
+                        </svg>
+                        Shan Lay ဝန်ဆောင်မှု
+                    </h1>
+                    <div className="space-y-3">
+                        <InfoItem title="ပိုင်ရှင်အမည်" value={businessInfo.userName} icon="👤" />
+                        <InfoItem title="အထူးပြု ဝန်ဆောင်မှုအမျိုးအစားများ" value={businessInfo.businessType} icon="⚡" />
+                        <InfoItem title="ဆက်သွယ်ရန် ဖုန်းနံပါတ်များ" value={businessInfo.phone} icon="📞" />
+                        <InfoItem title="တည်နေရာလိပ်စာ" value={businessInfo.address} icon="📍" />
+                        <InfoItem title="အသုံးပြုသူ ID (မျှဝေရန်)" value={userId || "မရရှိသေးပါ"} icon="🔑" isId={true}/>
+                    </div>
+                </div>
+
+                {/* --- POST CREATOR --- */}
+                {dbInstance && userId && <PostCreator db={dbInstance} auth={auth} userId={userId} businessInfo={businessInfo} />}
+
+                {/* --- CONTENT FEED --- */}
+                <h2 className="text-2xl font-bold text-gray-700 mb-4 border-b pb-2">
+                    Shan Lay ၏ အလုပ်ပုံ/ဗီဒီယိုများ (Feed)
+                </h2>
+
+                {loadingPosts && (
+                    <div className="text-center py-10 text-gray-500">
+                        <svg className="animate-spin h-8 w-8 text-indigo-500 mx-auto mb-3" viewBox="0 0 24 24">...</svg>
+                        ပို့စ်များ စောင့်ဆိုင်းနေပါသည်...
+                    </div>
+                )}
+                
+                {!loadingPosts && posts.length === 0 && (
+                    <div className="bg-yellow-50 p-5 rounded-xl text-center text-yellow-800 border-l-4 border-yellow-500">
+                        <p className="font-semibold">ပို့စ်များ မရှိသေးပါ။</p>
+                        <p className="text-sm mt-1">အပေါ်က "အသစ်တင်ရန်" နေရာကနေ ပို့စ်အသစ်တစ်ခု စတင်ဖန်တီးနိုင်ပါတယ်။</p>
+                    </div>
+                )}
+
+                <div className="post-feed">
+                    {posts.map((post) => (
+                        <PostCard key={post.id} post={post} />
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// Simple utility component for display information
+const InfoItem = ({ title, value, icon, isId = false }) => (
+    <div className={`p-3 rounded-lg flex items-center ${isId ? 'bg-indigo-50 border border-indigo-200' : 'bg-gray-100'}`}>
+        <span className="text-xl mr-3">{icon}</span>
+        <div>
+            <p className="text-xs font-medium text-gray-500">{title}</p>
+            <p className={`text-base font-semibold ${isId ? 'text-indigo-700 text-sm break-all' : 'text-gray-800'}`}>{value}</p>
+        </div>
+    </div>
+);
+
+export default App;
